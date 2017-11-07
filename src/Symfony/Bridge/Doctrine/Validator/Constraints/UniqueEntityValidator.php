@@ -26,6 +26,9 @@ use Symfony\Component\Validator\ConstraintValidator;
  */
 class UniqueEntityValidator extends ConstraintValidator
 {
+    /**
+     * @var ManagerRegistry
+     */
     private $registry;
 
     public function __construct(ManagerRegistry $registry)
@@ -71,25 +74,44 @@ class UniqueEntityValidator extends ConstraintValidator
                 throw new ConstraintDefinitionException(sprintf('Object manager "%s" does not exist.', $constraint->em));
             }
         } else {
-            $em = $this->registry->getManagerForClass(get_class($entity));
+            if($constraint->entityClass) {
+                $em = $this->registry->getManagerForClass($constraint->entityClass);
 
-            if (!$em) {
-                throw new ConstraintDefinitionException(sprintf('Unable to find the object manager associated with an entity of class "%s".', get_class($entity)));
+                if (!$em) {
+                    throw new ConstraintDefinitionException(sprintf('Unable to find the object manager associated with an entity of class "%s".', $constraint->entityClass));
+                }
+            } else {
+                $em = $this->registry->getManagerForClass(get_class($entity));
+
+                if (!$em) {
+                    throw new ConstraintDefinitionException(sprintf('Unable to find the object manager associated with an entity of class "%s".', get_class($entity)));
+                }
             }
         }
 
-        $class = $em->getClassMetadata(get_class($entity));
-        /* @var $class \Doctrine\Common\Persistence\Mapping\ClassMetadata */
+        if($constraint->entityClass) {
+            /* @var $class \Doctrine\Common\Persistence\Mapping\ClassMetadata */
+            $class = $em->getClassMetadata($constraint->entityClass);
+        } else {
+            /* @var $class \Doctrine\Common\Persistence\Mapping\ClassMetadata */
+            $class = $em->getClassMetadata(get_class($entity));
+        }
 
         $criteria = array();
         $hasNullValue = false;
 
-        foreach ($fields as $fieldName) {
+        foreach ($fields as $dtoFieldName => $fieldName) {
             if (!$class->hasField($fieldName) && !$class->hasAssociation($fieldName)) {
                 throw new ConstraintDefinitionException(sprintf('The field "%s" is not mapped by Doctrine, so it cannot be validated for uniqueness.', $fieldName));
             }
-
-            $fieldValue = $class->reflFields[$fieldName]->getValue($entity);
+            if($constraint->entityClass) {
+                // Get the field of DTO
+                $property = (new \ReflectionClass($entity))->getProperty($fieldName);
+                $property->setAccessible(true);
+                $fieldValue = $property->getValue($entity);
+            } else {
+                $fieldValue = $class->reflFields[$fieldName]->getValue($entity);
+            }
 
             if (null === $fieldValue) {
                 $hasNullValue = true;
@@ -127,11 +149,11 @@ class UniqueEntityValidator extends ConstraintValidator
              * by checking the entity is the same, or subclass of the supported entity.
              */
             $repository = $em->getRepository($constraint->entityClass);
-            $supportedClass = $repository->getClassName();
+//            $supportedClass = $repository->getClassName();
 
-            if (!$entity instanceof $supportedClass) {
-                throw new ConstraintDefinitionException(sprintf('The "%s" entity repository does not support the "%s" entity. The entity should be an instance of or extend "%s".', $constraint->entityClass, $class->getName(), $supportedClass));
-            }
+//            if (!$entity instanceof $supportedClass) {
+//                throw new ConstraintDefinitionException(sprintf('The "%s" entity repository does not support the "%s" entity. The entity should be an instance of or extend "%s".', $constraint->entityClass, $class->getName(), $supportedClass));
+//            }
         } else {
             $repository = $em->getRepository(get_class($entity));
         }
@@ -160,16 +182,15 @@ class UniqueEntityValidator extends ConstraintValidator
             return;
         }
 
-        $errorPath = null !== $constraint->errorPath ? $constraint->errorPath : $fields[0];
-        $invalidValue = isset($criteria[$errorPath]) ? $criteria[$errorPath] : $criteria[$fields[0]];
+        $errorPath = null !== $constraint->errorPath ? $constraint->errorPath : reset($fields);
+        $invalidValue = isset($criteria[$errorPath]) ? $criteria[$errorPath] : $criteria[reset($fields)];
 
         $this->context->buildViolation($constraint->message)
-            ->atPath($errorPath)
-            ->setParameter('{{ value }}', $this->formatWithIdentifiers($em, $class, $invalidValue))
-            ->setInvalidValue($invalidValue)
-            ->setCode(UniqueEntity::NOT_UNIQUE_ERROR)
-            ->setCause($result)
-            ->addViolation();
+                      ->atPath($errorPath)
+                      ->setParameter('{{ value }}', $this->formatWithIdentifiers($em, $class, $invalidValue))
+                      ->setInvalidValue($invalidValue)
+                      ->setCode(UniqueEntity::NOT_UNIQUE_ERROR)
+                      ->addViolation();
     }
 
     private function formatWithIdentifiers(ObjectManager $em, ClassMetadata $class, $value)
